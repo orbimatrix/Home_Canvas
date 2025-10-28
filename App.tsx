@@ -47,9 +47,9 @@ const loadingMessages = [
 ];
 
 const PREDEFINED_PRODUCTS: Product[] = [
-  { id: 101, name: 'Comfy Armchair', imageUrl: '/assets/armchair.jpeg' },
-  { id: 102, name: 'Modern Lamp', imageUrl: '/assets/lamp.jpeg' },
-  { id: 103, name: 'Potted Plant', imageUrl: '/assets/plant.jpeg' },
+  { id: 101, name: 'Comfy Armchair', imageUrl: '/assets/armchair.jpg' },
+  { id: 102, name: 'Modern Lamp', imageUrl: '/assets/object.jpeg' },
+  { id: 103, name: 'Potted Plant', imageUrl: '/assets/pottedplant.jpg' },
 ];
 
 
@@ -89,8 +89,9 @@ const App: React.FC = () => {
             return res.blob();
         })
         .then(blob => {
-            const filename = product.name.replace(/\s+/g, '_').toLowerCase() + '.jpeg';
-            const file = new File([blob], filename, { type: blob.type || 'image/jpeg' });
+            const extension = blob.type.split('/')[1] ?? 'jpeg';
+            const filename = product.name.replace(/\s+/g, '_').toLowerCase() + `.${extension}`;
+            const file = new File([blob], filename, { type: blob.type });
             setProductImageFile(file);
         })
         .catch(err => {
@@ -132,7 +133,7 @@ const App: React.FC = () => {
       }
 
       // 2. Fetch the default scene
-      const sceneResponse = await fetch('/assets/scene.jpeg');
+      const sceneResponse = await fetch('https://storage.googleapis.com/gemini-ui-workshop-assets/scene.jpeg');
       if (!sceneResponse.ok) {
         throw new Error('Failed to load default scene image');
       }
