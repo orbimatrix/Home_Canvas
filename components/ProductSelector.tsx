@@ -9,6 +9,7 @@ import ObjectCard from './ObjectCard';
 
 interface ProductSelectorProps {
     products: Product[];
+    selectedProduct: Product | null;
     onSelect: (product: Product) => void;
     onAddOwnProductClick: () => void;
 }
@@ -25,7 +26,7 @@ const ArrowRightIcon = () => (
     </svg>
 );
 
-const ProductSelector: React.FC<ProductSelectorProps> = ({ products, onSelect, onAddOwnProductClick }) => {
+const ProductSelector: React.FC<ProductSelectorProps> = ({ products, selectedProduct, onSelect, onAddOwnProductClick }) => {
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const [canScrollLeft, setCanScrollLeft] = useState(false);
     const [canScrollRight, setCanScrollRight] = useState(true);
@@ -73,14 +74,13 @@ const ProductSelector: React.FC<ProductSelectorProps> = ({ products, onSelect, o
     return (
         <div className="w-full max-w-6xl mx-auto text-center animate-fade-in">
             <div className="relative flex items-center">
-                <button 
+                {canScrollLeft && <button 
                     onClick={() => scroll('left')}
-                    disabled={!canScrollLeft}
                     className="absolute -left-4 z-10 p-2 bg-white rounded-full shadow-md hover:bg-zinc-100 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                     aria-label="Scroll left"
                 >
                     <ArrowLeftIcon />
-                </button>
+                </button>}
                 <div
                     ref={scrollContainerRef}
                     className="flex space-x-6 overflow-x-auto snap-x snap-mandatory py-4 scrollbar-hide"
@@ -89,20 +89,19 @@ const ProductSelector: React.FC<ProductSelectorProps> = ({ products, onSelect, o
                          <div key={product.id} className="snap-center shrink-0 w-52 md:w-64">
                             <ObjectCard
                                 product={product}
-                                isSelected={false}
+                                isSelected={selectedProduct?.id === product.id}
                                 onClick={() => onSelect(product)}
                             />
                         </div>
                     ))}
                 </div>
-                 <button 
+                 {canScrollRight && <button 
                     onClick={() => scroll('right')}
-                    disabled={!canScrollRight}
                     className="absolute -right-4 z-10 p-2 bg-white rounded-full shadow-md hover:bg-zinc-100 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                     aria-label="Scroll right"
                 >
                     <ArrowRightIcon />
-                </button>
+                </button>}
             </div>
             <div className="mt-8">
                 <button

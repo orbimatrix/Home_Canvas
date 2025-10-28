@@ -249,6 +249,14 @@ const markImage = async (
     });
 };
 
+const getScaleDescription = (scale: number): string => {
+    if (scale < 0.8) return "noticeably smaller than its typical realistic size";
+    if (scale < 0.95) return "slightly smaller than its typical realistic size";
+    if (scale > 1.2) return "noticeably larger than its typical realistic size";
+    if (scale > 1.05) return "slightly larger than its typical realistic size";
+    return "at its typical realistic size";
+};
+
 
 /**
  * Generates a composite image using a multi-modal AI model.
@@ -259,6 +267,7 @@ const markImage = async (
  * @param environmentImage The file for the background environment.
  * @param environmentDescription A text description of the environment.
  * @param dropPosition The relative x/y coordinates (0-100) where the product was dropped.
+ * @param productScale A multiplier for the product's scale (e.g., 1.0 is default, 1.2 is larger).
  * @returns A promise that resolves to an object containing the base64 data URL of the generated image and the debug image.
  */
 export const generateCompositeImage = async (
@@ -266,7 +275,8 @@ export const generateCompositeImage = async (
     objectDescription: string,
     environmentImage: File,
     environmentDescription: string,
-    dropPosition: { xPercent: number; yPercent: number; }
+    dropPosition: { xPercent: number; yPercent: number; },
+    productScale: number
 ): Promise<{ finalImageUrl: string; debugImageUrl: string; finalPrompt: string; }> => {
   console.log('Starting multi-step image generation process...');
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
@@ -335,6 +345,8 @@ Provide only the two descriptions concatenated in a few sentences.
   const objectImagePart = await fileToPart(resizedObjectImage);
   const cleanEnvironmentImagePart = await fileToPart(resizedEnvironmentImage); // IMPORTANT: Use clean image
   
+  const scaleDescription = getScaleDescription(productScale);
+
   const prompt = `
 **Role:**
 You are a visual composition expert. Your task is to take a 'product' image and seamlessly integrate it into a 'scene' image, adjusting for perspective, lighting, and scale.
@@ -347,10 +359,12 @@ You are a visual composition expert. Your task is to take a 'product' image and 
 -   **Placement Instruction (Crucial):**
     -   You must place the product at the location described below exactly. You should only place the product once. Use this dense, semantic description to find the exact spot in the scene.
     -   **Product location Description:** "${semanticLocationDescription}"
+-   **Scaling Instruction (Important):**
+    -   You must render the product so that it is ${scaleDescription}. This is a critical instruction. Adjust its size relative to the other objects in the scene to meet this requirement.
 -   **Final Image Requirements:**
     -   The output image's style, lighting, shadows, reflections, and camera perspective must exactly match the original scene.
-    -   Do not just copy and paste the product. You must intelligently re-render it to fit the context. Adjust the product's perspective and orientation to its most natural position, scale it appropriately, and ensure it casts realistic shadows according to the scene's light sources.
-    -   The product must have proportional realism. For example, a lamp product can't be bigger than a sofa in scene.
+    -   Do not just copy and paste the product. You must intelligently re-render it to fit the context. Adjust the product's perspective and orientation to its most natural position, and ensure it casts realistic shadows according to the scene's light sources.
+    -   The product must have proportional realism, but adhere to the scaling instruction above. For example, a lamp product can't be bigger than a sofa in scene unless explicitly instructed to be 'noticeably larger'.
     -   You must not return the original scene image without product placement. The product must be always present in the composite image.
 
 The output should ONLY be the final, composed image. Do not add any text or explanation.

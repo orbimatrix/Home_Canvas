@@ -12,6 +12,8 @@ import ObjectCard from './components/ObjectCard';
 import Spinner from './components/Spinner';
 import DebugModal from './components/DebugModal';
 import TouchGhost from './components/TouchGhost';
+import ProductSelector from './components/ProductSelector';
+import AddProductModal from './components/AddProductModal';
 
 // Pre-load a transparent image to use for hiding the default drag ghost.
 // This prevents a race condition on the first drag.
@@ -44,8 +46,15 @@ const loadingMessages = [
     "Assembling the final scene..."
 ];
 
+const PREDEFINED_PRODUCTS: Product[] = [
+  { id: 101, name: 'Comfy Armchair', imageUrl: '/assets/armchair.jpeg' },
+  { id: 102, name: 'Modern Lamp', imageUrl: '/assets/lamp.jpeg' },
+  { id: 103, name: 'Potted Plant', imageUrl: '/assets/plant.jpeg' },
+];
+
 
 const App: React.FC = () => {
+  const [products, setProducts] = useState<Product[]>(PREDEFINED_PRODUCTS);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [productImageFile, setProductImageFile] = useState<File | null>(null);
   const [sceneImage, setSceneImage] = useState<File | null>(null);
@@ -56,6 +65,9 @@ const App: React.FC = () => {
   const [debugImageUrl, setDebugImageUrl] = useState<string | null>(null);
   const [debugPrompt, setDebugPrompt] = useState<string | null>(null);
   const [isDebugModalOpen, setIsDebugModalOpen] = useState(false);
+  const [isAddProductModalOpen, setIsAddProductModalOpen] = useState(false);
+  const [productScale, setProductScale] = useState<number>(1);
+
 
   // State for touch drag & drop
   const [isTouchDragging, setIsTouchDragging] = useState<boolean>(false);
@@ -67,18 +79,40 @@ const App: React.FC = () => {
   const sceneImageUrl = sceneImage ? URL.createObjectURL(sceneImage) : null;
   const productImageUrl = selectedProduct ? selectedProduct.imageUrl : null;
 
-  const handleProductImageUpload = useCallback((file: File) => {
-    // useEffect will handle cleaning up the previous blob URL
+  const handleProductSelect = useCallback((product: Product) => {
+    setSelectedProduct(product);
+    // Fetch the image data (works for both asset URLs and blob URLs) and create a File object
+    // This ensures productImageFile is always set for the composition service.
+    fetch(product.imageUrl)
+        .then(res => {
+            if (!res.ok) throw new Error(`Failed to fetch product image: ${product.imageUrl}`);
+            return res.blob();
+        })
+        .then(blob => {
+            const filename = product.name.replace(/\s+/g, '_').toLowerCase() + '.jpeg';
+            const file = new File([blob], filename, { type: blob.type || 'image/jpeg' });
+            setProductImageFile(file);
+        })
+        .catch(err => {
+            const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
+            setError(`Could not load the selected product image. Details: ${errorMessage}`);
+            console.error(err);
+        });
+  }, []);
+
+  const handleAddCustomProduct = useCallback((file: File) => {
     setError(null);
     try {
         const imageUrl = URL.createObjectURL(file);
-        const product: Product = {
+        const newProduct: Product = {
             id: Date.now(),
             name: file.name,
             imageUrl: imageUrl,
         };
+        setProducts(prev => [...prev, newProduct]);
+        setSelectedProduct(newProduct);
         setProductImageFile(file);
-        setSelectedProduct(product);
+        setIsAddProductModalOpen(false); // Close modal on success
     } catch(err) {
       const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
       setError(`Could not load the product image. Details: ${errorMessage}`);
@@ -89,34 +123,28 @@ const App: React.FC = () => {
   const handleInstantStart = useCallback(async () => {
     setError(null);
     try {
-      // Fetch the default images
-      const [objectResponse, sceneResponse] = await Promise.all([
-        fetch('/assets/object.jpeg'),
-        fetch('/assets/scene.jpeg')
-      ]);
-
-      if (!objectResponse.ok || !sceneResponse.ok) {
-        throw new Error('Failed to load default images');
+      // 1. Select the first predefined product
+      const productToSelect = products[0];
+      if (productToSelect) {
+        handleProductSelect(productToSelect);
+      } else {
+        throw new Error('No predefined products available for instant start.');
       }
 
-      // Convert to blobs then to File objects
-      const [objectBlob, sceneBlob] = await Promise.all([
-        objectResponse.blob(),
-        sceneResponse.blob()
-      ]);
-
-      const objectFile = new File([objectBlob], 'object.jpeg', { type: 'image/jpeg' });
+      // 2. Fetch the default scene
+      const sceneResponse = await fetch('/assets/scene.jpeg');
+      if (!sceneResponse.ok) {
+        throw new Error('Failed to load default scene image');
+      }
+      const sceneBlob = await sceneResponse.blob();
       const sceneFile = new File([sceneBlob], 'scene.jpeg', { type: 'image/jpeg' });
-
-      // Update state with the new files
       setSceneImage(sceneFile);
-      handleProductImageUpload(objectFile);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
       setError(`Could not load default images. Details: ${errorMessage}`);
       console.error(err);
     }
-  }, [handleProductImageUpload]);
+  }, [products, handleProductSelect]);
 
   const handleProductDrop = useCallback(async (position: {x: number, y: number}, relativePosition: { xPercent: number; yPercent: number; }) => {
     if (!productImageFile || !sceneImage || !selectedProduct) {
@@ -132,7 +160,8 @@ const App: React.FC = () => {
         selectedProduct.name,
         sceneImage,
         sceneImage.name,
-        relativePosition
+        relativePosition,
+        productScale
       );
       setDebugImageUrl(debugImageUrl);
       setDebugPrompt(finalPrompt);
@@ -148,11 +177,12 @@ const App: React.FC = () => {
       setIsLoading(false);
       setPersistedOrbPosition(null);
     }
-  }, [productImageFile, sceneImage, selectedProduct]);
+  }, [productImageFile, sceneImage, selectedProduct, productScale]);
 
 
   const handleReset = useCallback(() => {
     // Let useEffect handle URL revocation
+    setProducts(PREDEFINED_PRODUCTS);
     setSelectedProduct(null);
     setProductImageFile(null);
     setSceneImage(null);
@@ -161,15 +191,15 @@ const App: React.FC = () => {
     setPersistedOrbPosition(null);
     setDebugImageUrl(null);
     setDebugPrompt(null);
+    setProductScale(1);
   }, []);
 
   const handleChangeProduct = useCallback(() => {
-    // Let useEffect handle URL revocation
     setSelectedProduct(null);
     setProductImageFile(null);
     setPersistedOrbPosition(null);
-    setDebugImageUrl(null);
-    setDebugPrompt(null);
+    setProductScale(1);
+    // Don't clear scene so user can try another product
   }, []);
   
   const handleChangeScene = useCallback(() => {
@@ -180,20 +210,21 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    // Clean up the scene's object URL when the component unmounts or the URL changes
     return () => {
         if (sceneImageUrl) URL.revokeObjectURL(sceneImageUrl);
     };
   }, [sceneImageUrl]);
   
   useEffect(() => {
-    // Clean up the product's object URL when the component unmounts or the URL changes
+    // Clean up all blob URLs created for custom products when component unmounts
     return () => {
-        if (productImageUrl && productImageUrl.startsWith('blob:')) {
-            URL.revokeObjectURL(productImageUrl);
-        }
+        products.forEach(product => {
+            if (product.imageUrl.startsWith('blob:')) {
+                URL.revokeObjectURL(product.imageUrl);
+            }
+        });
     };
-  }, [productImageUrl]);
+  }, [products]);
 
   useEffect(() => {
     let interval: ReturnType<typeof setInterval> | undefined;
@@ -210,7 +241,6 @@ const App: React.FC = () => {
 
   const handleTouchStart = (e: React.TouchEvent) => {
     if (!selectedProduct) return;
-    // Prevent page scroll
     e.preventDefault();
     setIsTouchDragging(true);
     const touch = e.touches[0];
@@ -285,7 +315,7 @@ const App: React.FC = () => {
     };
 
     if (isTouchDragging) {
-      document.body.style.overflow = 'hidden'; // Prevent scrolling
+      document.body.style.overflow = 'hidden';
       window.addEventListener('touchmove', handleTouchMove, { passive: false });
       window.addEventListener('touchend', handleTouchEnd, { passive: false });
     }
@@ -313,20 +343,21 @@ const App: React.FC = () => {
         );
     }
     
-    if (!productImageFile || !sceneImage) {
+    if (!selectedProduct || !sceneImage) {
       return (
         <div className="w-full max-w-6xl mx-auto animate-fade-in">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
             <div className="flex flex-col">
-              <h2 className="text-2xl font-extrabold text-center mb-5 text-zinc-800">Upload Product</h2>
-              <ImageUploader 
-                id="product-uploader"
-                onFileSelect={handleProductImageUpload}
-                imageUrl={productImageUrl}
+              <h2 className="text-2xl font-extrabold text-center mb-5 text-zinc-800">1. Select a Product</h2>
+              <ProductSelector
+                products={products}
+                selectedProduct={selectedProduct}
+                onSelect={handleProductSelect}
+                onAddOwnProductClick={() => setIsAddProductModalOpen(true)}
               />
             </div>
             <div className="flex flex-col">
-              <h2 className="text-2xl font-extrabold text-center mb-5 text-zinc-800">Upload Scene</h2>
+              <h2 className="text-2xl font-extrabold text-center mb-5 text-zinc-800">2. Upload a Scene</h2>
               <ImageUploader 
                 id="scene-uploader"
                 onFileSelect={setSceneImage}
@@ -335,19 +366,28 @@ const App: React.FC = () => {
             </div>
           </div>
           <div className="text-center mt-10 min-h-[4rem] flex flex-col justify-center items-center">
-            <p className="text-zinc-500 animate-fade-in">
-              Upload a product image and a scene image to begin.
-            </p>
-            <p className="text-zinc-500 animate-fade-in mt-2">
-              Or click{' '}
-              <button
-                onClick={handleInstantStart}
-                className="font-bold text-blue-600 hover:text-blue-800 underline transition-colors"
-              >
-                here
-              </button>
-              {' '}for an instant start.
-            </p>
+             { !selectedProduct && !sceneImage && (
+                <>
+                    <p className="text-zinc-500 animate-fade-in">
+                        Choose a product and upload a scene to begin.
+                    </p>
+                    <p className="text-zinc-500 animate-fade-in mt-2">
+                        Or click{' '}
+                        <button
+                            onClick={handleInstantStart}
+                            className="font-bold text-blue-600 hover:text-blue-800 underline transition-colors"
+                        >
+                            here
+                        </button>
+                        {' '}for an instant start.
+                    </p>
+                </>
+             )}
+             { (selectedProduct || sceneImage) && (!selectedProduct || !sceneImage) && (
+                 <p className="text-zinc-500 animate-fade-in">
+                    { !selectedProduct ? "Now, select a product." : "Great! Now upload a background scene."}
+                 </p>
+             )}
           </div>
         </div>
       );
@@ -359,7 +399,7 @@ const App: React.FC = () => {
           {/* Product Column */}
           <div className="md:col-span-1 flex flex-col">
             <h2 className="text-2xl font-extrabold text-center mb-5 text-zinc-800">Product</h2>
-            <div className="flex-grow flex items-center justify-center">
+            <div className="flex-grow flex flex-col items-center justify-center">
               <div 
                   draggable="true" 
                   onDragStart={(e) => {
@@ -368,8 +408,28 @@ const App: React.FC = () => {
                   }}
                   onTouchStart={handleTouchStart}
                   className="cursor-move w-full max-w-xs"
+                  style={{ transform: `scale(${productScale})`, transition: 'transform 0.2s ease-out' }}
               >
                   <ObjectCard product={selectedProduct!} isSelected={true} />
+              </div>
+              <div className="w-full max-w-xs mt-6">
+                <label htmlFor="scale-slider" className="block text-sm font-medium text-zinc-600 text-center mb-2">Adjust Scale</label>
+                <input
+                    id="scale-slider"
+                    type="range"
+                    min="0.5"
+                    max="1.5"
+                    step="0.05"
+                    value={productScale}
+                    onChange={(e) => setProductScale(parseFloat(e.target.value))}
+                    className="w-full h-2 bg-zinc-200 rounded-lg appearance-none cursor-pointer"
+                    aria-label="Adjust product scale"
+                />
+                <div className="flex justify-between text-xs text-zinc-500 mt-1 px-1">
+                    <span>Smaller</span>
+                    <span>Default</span>
+                    <span>Larger</span>
+                </div>
               </div>
             </div>
             <div className="text-center mt-4">
@@ -448,6 +508,11 @@ const App: React.FC = () => {
         onClose={() => setIsDebugModalOpen(false)}
         imageUrl={debugImageUrl}
         prompt={debugPrompt}
+      />
+      <AddProductModal
+        isOpen={isAddProductModalOpen}
+        onClose={() => setIsAddProductModalOpen(false)}
+        onFileSelect={handleAddCustomProduct}
       />
     </div>
   );
