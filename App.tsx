@@ -4,7 +4,7 @@
 */
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { generateCompositeImage } from './services/geminiService';
+import { generateCompositeImage, analyzeImage, editImage } from './services/geminiService';
 import { Product } from './types';
 import Header from './components/Header';
 import ImageUploader from './components/ImageUploader';
@@ -14,6 +14,7 @@ import DebugModal from './components/DebugModal';
 import TouchGhost from './components/TouchGhost';
 import ProductSelector from './components/ProductSelector';
 import AddProductModal from './components/AddProductModal';
+import AnalysisModal from './components/AnalysisModal';
 
 // Pre-load a transparent image to use for hiding the default drag ghost.
 // This prevents a race condition on the first drag.
@@ -52,12 +53,24 @@ const PREDEFINED_PRODUCTS: Product[] = [
   { id: 103, name: 'Potted Plant', imageUrl: '/assets/pottedplant.jpg' },
 ];
 
+const UndoIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M11 15l-3-3m0 0l3-3m-3 3h8a5 5 0 015 5v1" />
+    </svg>
+);
+
+const RedoIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M13 15l3-3m0 0l-3-3m3 3H5a5 5 0 00-5 5v1" />
+    </svg>
+);
 
 const App: React.FC = () => {
   const [products, setProducts] = useState<Product[]>(PREDEFINED_PRODUCTS);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [productImageFile, setProductImageFile] = useState<File | null>(null);
-  const [sceneImage, setSceneImage] = useState<File | null>(null);
+  const [sceneHistory, setSceneHistory] = useState<File[]>([]);
+  const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
@@ -68,7 +81,6 @@ const App: React.FC = () => {
   const [isAddProductModalOpen, setIsAddProductModalOpen] = useState(false);
   const [productScale, setProductScale] = useState<number>(1);
 
-
   // State for touch drag & drop
   const [isTouchDragging, setIsTouchDragging] = useState<boolean>(false);
   const [touchGhostPosition, setTouchGhostPosition] = useState<{x: number, y: number} | null>(null);
@@ -76,8 +88,30 @@ const App: React.FC = () => {
   const [touchOrbPosition, setTouchOrbPosition] = useState<{x: number, y: number} | null>(null);
   const sceneImgRef = useRef<HTMLImageElement>(null);
   
+  // State for new features
+  const [editPrompt, setEditPrompt] = useState('');
+  const [isAnalysisModalOpen, setIsAnalysisModalOpen] = useState(false);
+  const [analysisResult, setAnalysisResult] = useState<string | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+
+  const sceneImage = sceneHistory[historyIndex] || null;
   const sceneImageUrl = sceneImage ? URL.createObjectURL(sceneImage) : null;
   const productImageUrl = selectedProduct ? selectedProduct.imageUrl : null;
+
+  const canUndo = historyIndex > 0;
+  const canRedo = historyIndex < sceneHistory.length - 1;
+
+  const handleUndo = () => {
+    if (canUndo) {
+        setHistoryIndex(prev => prev - 1);
+    }
+  };
+
+  const handleRedo = () => {
+    if (canRedo) {
+        setHistoryIndex(prev => prev + 1);
+    }
+  };
 
   const handleProductSelect = useCallback((product: Product) => {
     setSelectedProduct(product);
@@ -120,6 +154,14 @@ const App: React.FC = () => {
       console.error(err);
     }
   }, []);
+  
+  const handleSceneUpload = useCallback((file: File) => {
+    setSceneHistory([file]);
+    setHistoryIndex(0);
+    setPersistedOrbPosition(null);
+    setDebugImageUrl(null);
+    setDebugPrompt(null);
+  }, []);
 
   const handleInstantStart = useCallback(async () => {
     setError(null);
@@ -139,16 +181,17 @@ const App: React.FC = () => {
       }
       const sceneBlob = await sceneResponse.blob();
       const sceneFile = new File([sceneBlob], 'scene.jpeg', { type: 'image/jpeg' });
-      setSceneImage(sceneFile);
+      handleSceneUpload(sceneFile);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
       setError(`Could not load default images. Details: ${errorMessage}`);
       console.error(err);
     }
-  }, [products, handleProductSelect]);
+  }, [products, handleProductSelect, handleSceneUpload]);
 
   const handleProductDrop = useCallback(async (position: {x: number, y: number}, relativePosition: { xPercent: number; yPercent: number; }) => {
-    if (!productImageFile || !sceneImage || !selectedProduct) {
+    const currentSceneImage = sceneHistory[historyIndex];
+    if (!productImageFile || !currentSceneImage || !selectedProduct) {
       setError('An unexpected error occurred. Please try again.');
       return;
     }
@@ -159,15 +202,20 @@ const App: React.FC = () => {
       const { finalImageUrl, debugImageUrl, finalPrompt } = await generateCompositeImage(
         productImageFile, 
         selectedProduct.name,
-        sceneImage,
-        sceneImage.name,
+        currentSceneImage,
+        currentSceneImage.name,
         relativePosition,
         productScale
       );
       setDebugImageUrl(debugImageUrl);
       setDebugPrompt(finalPrompt);
       const newSceneFile = dataURLtoFile(finalImageUrl, `generated-scene-${Date.now()}.jpeg`);
-      setSceneImage(newSceneFile);
+      
+      const newHistory = sceneHistory.slice(0, historyIndex + 1); // Discard "redo" states
+      newHistory.push(newSceneFile);
+      setSceneHistory(newHistory);
+      setHistoryIndex(newHistory.length - 1);
+
 
     } catch (err)
  {
@@ -178,15 +226,62 @@ const App: React.FC = () => {
       setIsLoading(false);
       setPersistedOrbPosition(null);
     }
-  }, [productImageFile, sceneImage, selectedProduct, productScale]);
+  }, [productImageFile, selectedProduct, productScale, sceneHistory, historyIndex]);
 
+  const handleAnalyzeScene = async () => {
+    const currentSceneImage = sceneHistory[historyIndex];
+    if (!currentSceneImage) return;
+
+    setIsAnalyzing(true);
+    setError(null);
+    setAnalysisResult(null);
+
+    try {
+        const result = await analyzeImage(currentSceneImage);
+        setAnalysisResult(result);
+        setIsAnalysisModalOpen(true);
+    } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
+        setError(`Failed to analyze the image. ${errorMessage}`);
+        console.error(err);
+    } finally {
+        setIsAnalyzing(false);
+    }
+  };
+
+  const handleEditImage = async () => {
+      if (!editPrompt.trim()) return;
+      const currentSceneImage = sceneHistory[historyIndex];
+      if (!currentSceneImage) return;
+
+      setIsLoading(true); // use the main loader
+      setError(null);
+
+      try {
+          const { finalImageUrl } = await editImage(currentSceneImage, editPrompt);
+          const newSceneFile = dataURLtoFile(finalImageUrl, `edited-scene-${Date.now()}.jpeg`);
+
+          const newHistory = sceneHistory.slice(0, historyIndex + 1);
+          newHistory.push(newSceneFile);
+          setSceneHistory(newHistory);
+          setHistoryIndex(newHistory.length - 1);
+          setEditPrompt(''); // Clear prompt on success
+      } catch (err) {
+          const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred.';
+          setError(`Failed to edit the image. ${errorMessage}`);
+          console.error(err);
+      } finally {
+          setIsLoading(false);
+      }
+  };
 
   const handleReset = useCallback(() => {
     // Let useEffect handle URL revocation
     setProducts(PREDEFINED_PRODUCTS);
     setSelectedProduct(null);
     setProductImageFile(null);
-    setSceneImage(null);
+    setSceneHistory([]);
+    setHistoryIndex(-1);
     setError(null);
     setIsLoading(false);
     setPersistedOrbPosition(null);
@@ -204,7 +299,8 @@ const App: React.FC = () => {
   }, []);
   
   const handleChangeScene = useCallback(() => {
-    setSceneImage(null);
+    setSceneHistory([]);
+    setHistoryIndex(-1);
     setPersistedOrbPosition(null);
     setDebugImageUrl(null);
     setDebugPrompt(null);
@@ -361,7 +457,7 @@ const App: React.FC = () => {
               <h2 className="text-2xl font-extrabold text-center mb-5 text-zinc-800">2. Upload a Scene</h2>
               <ImageUploader 
                 id="scene-uploader"
-                onFileSelect={setSceneImage}
+                onFileSelect={handleSceneUpload}
                 imageUrl={sceneImageUrl}
               />
             </div>
@@ -446,12 +542,34 @@ const App: React.FC = () => {
           </div>
           {/* Scene Column */}
           <div className="md:col-span-2 flex flex-col">
-            <h2 className="text-2xl font-extrabold text-center mb-5 text-zinc-800">Scene</h2>
-            <div className="flex-grow flex items-center justify-center">
+            <div className="flex justify-center items-center mb-5 relative">
+              <h2 className="text-2xl font-extrabold text-zinc-800">Scene</h2>
+              {sceneHistory.length > 1 && (
+                <div className="absolute right-0 flex items-center gap-2">
+                  <button
+                    onClick={handleUndo}
+                    disabled={!canUndo}
+                    className="p-2 rounded-md bg-zinc-100 hover:bg-zinc-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    aria-label="Undo last action"
+                  >
+                    <UndoIcon />
+                  </button>
+                  <button
+                    onClick={handleRedo}
+                    disabled={!canRedo}
+                    className="p-2 rounded-md bg-zinc-100 hover:bg-zinc-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    aria-label="Redo last action"
+                  >
+                    <RedoIcon />
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="flex-grow flex flex-col items-center justify-center">
               <ImageUploader 
                   ref={sceneImgRef}
                   id="scene-uploader" 
-                  onFileSelect={setSceneImage} 
+                  onFileSelect={handleSceneUpload} 
                   imageUrl={sceneImageUrl}
                   isDropZone={!!sceneImage && !isLoading}
                   onProductDrop={handleProductDrop}
@@ -461,6 +579,58 @@ const App: React.FC = () => {
                   isTouchHovering={isHoveringDropZone}
                   touchOrbPosition={touchOrbPosition}
               />
+               {/* NEW UI: Analysis and Edit controls */}
+              {sceneImage && !isLoading && (
+                  <div className="w-full max-w-2xl mx-auto mt-6 space-y-4 animate-fade-in">
+                      {/* Analysis section */}
+                      <div className="bg-zinc-50 border border-zinc-200 p-4 rounded-lg">
+                          <p className="text-sm text-zinc-600 mb-3">Get a detailed description of the current scene using AI.</p>
+                          <button
+                              onClick={handleAnalyzeScene}
+                              disabled={isAnalyzing}
+                              className="w-full flex items-center justify-center gap-2 bg-white hover:bg-zinc-100 text-zinc-700 font-semibold py-2 px-4 rounded-lg transition-colors border border-zinc-300 shadow-sm disabled:opacity-50 disabled:cursor-wait"
+                              aria-label="Analyze scene with AI"
+                          >
+                              {isAnalyzing ? (
+                                  <svg className="animate-spin h-5 w-5 text-zinc-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                  </svg>
+                              ) : (
+                                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                  </svg>
+                              )}
+                              Analyze Scene
+                          </button>
+                      </div>
+
+                      {/* Edit section */}
+                      <div className="bg-zinc-50 border border-zinc-200 p-4 rounded-lg">
+                          <label htmlFor="edit-prompt" className="block text-sm font-medium text-zinc-700 mb-2">
+                              Or, edit the scene with a prompt:
+                          </label>
+                          <div className="flex gap-2">
+                              <input
+                                  id="edit-prompt"
+                                  type="text"
+                                  value={editPrompt}
+                                  onChange={(e) => setEditPrompt(e.target.value)}
+                                  placeholder="e.g., 'Make the lighting dramatic'"
+                                  className="flex-grow block w-full rounded-md border-zinc-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2"
+                              />
+                              <button
+                                  onClick={handleEditImage}
+                                  disabled={!editPrompt.trim()}
+                                  className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg text-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                  aria-label="Apply edit to scene"
+                              >
+                                  Apply
+                              </button>
+                          </div>
+                      </div>
+                  </div>
+              )}
             </div>
             <div className="text-center mt-4">
               <div className="h-5 flex items-center justify-center">
@@ -514,6 +684,11 @@ const App: React.FC = () => {
         isOpen={isAddProductModalOpen}
         onClose={() => setIsAddProductModalOpen(false)}
         onFileSelect={handleAddCustomProduct}
+      />
+      <AnalysisModal
+        isOpen={isAnalysisModalOpen}
+        onClose={() => setIsAnalysisModalOpen(false)}
+        analysisText={analysisResult}
       />
     </div>
   );

@@ -4,7 +4,7 @@
 */
 
 
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import { GoogleGenAI, GenerateContentResponse, Modality } from "@google/genai";
 
 // Helper to get intrinsic image dimensions from a File object
 const getImageDimensions = (file: File): Promise<{ width: number; height: number }> => {
@@ -397,6 +397,80 @@ The output should ONLY be the final, composed image. Do not add any text or expl
     );
     
     return { finalImageUrl, debugImageUrl, finalPrompt: prompt };
+  }
+
+  console.error("Model response did not contain an image part.", response);
+  throw new Error("The AI model did not return an image. Please try again.");
+};
+
+/**
+ * Analyzes an image using Gemini 2.5 Flash and returns a text description.
+ * @param imageFile The image to analyze.
+ * @returns A promise that resolves to a string containing the AI's description.
+ */
+export const analyzeImage = async (imageFile: File): Promise<string> => {
+  console.log('Analyzing image with gemini-2.5-flash...');
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
+
+  const imagePart = await fileToPart(imageFile);
+  const prompt = "Describe this image in detail. What objects are present? What is the style and mood of the scene?";
+  
+  const response = await ai.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: { parts: [{ text: prompt }, imagePart] }
+  });
+
+  return response.text;
+};
+
+/**
+ * Edits an image based on a text prompt using Gemini 2.5 Flash Image.
+ * @param imageFile The image to edit.
+ * @param prompt The text prompt describing the desired edit.
+ * @returns A promise that resolves to an object containing the data URL of the edited image.
+ */
+export const editImage = async (
+    imageFile: File, 
+    prompt: string
+): Promise<{ finalImageUrl: string; }> => {
+  console.log('Starting image edit process...');
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
+
+  const { width: originalWidth, height: originalHeight } = await getImageDimensions(imageFile);
+  const MAX_DIMENSION = 1024;
+
+  console.log('Resizing image for editing...');
+  const resizedImage = await resizeImage(imageFile, MAX_DIMENSION);
+  
+  const imagePart = await fileToPart(resizedImage);
+  const textPart = { text: prompt };
+
+  console.log('Sending image and edit prompt to gemini-2.5-flash-image...');
+  const response: GenerateContentResponse = await ai.models.generateContent({
+    model: 'gemini-2.5-flash-image',
+    contents: { parts: [imagePart, textPart] },
+    config: {
+        responseModalities: [Modality.IMAGE],
+    },
+  });
+
+  console.log('Received response from edit model.');
+
+  const imagePartFromResponse = response.candidates?.[0]?.content?.parts?.find(part => part.inlineData);
+
+  if (imagePartFromResponse?.inlineData) {
+    const { mimeType, data } = imagePartFromResponse.inlineData;
+    const generatedSquareImageUrl = `data:${mimeType};base64,${data}`;
+    
+    console.log('Cropping edited image back to original aspect ratio...');
+    const finalImageUrl = await cropToOriginalAspectRatio(
+        generatedSquareImageUrl,
+        originalWidth,
+        originalHeight,
+        MAX_DIMENSION
+    );
+    
+    return { finalImageUrl };
   }
 
   console.error("Model response did not contain an image part.", response);
